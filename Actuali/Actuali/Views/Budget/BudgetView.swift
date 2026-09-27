@@ -118,6 +118,7 @@ struct BudgetView: View {
     @State private var categoryFilter: BudgetCategoryFilter = .all
     @State private var templateResult: GoalTemplateResultAlert?
     @State private var isRunningBudgetAction = false
+    @State private var isShowingOverview = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.isWideLayout) private var isWideLayout
@@ -223,6 +224,7 @@ struct BudgetView: View {
             }
             .onChange(of: budgetStore.currentBudgetId) { _, _ in
                 selectedMonth = budgetStore.lastViewedBudgetMonth ?? Self.currentMonthString()
+                isShowingOverview = false
             }
             .onChange(of: selectedMonth) { _, newMonth in
                 budgetStore.lastViewedBudgetMonth = newMonth
@@ -299,6 +301,17 @@ struct BudgetView: View {
                 )
             }
         }
+        .overlay {
+            if isShowingOverview {
+                BudgetOverviewOverlay {
+                    withAnimation(AppAnimation.appearance) {
+                        isShowingOverview = false
+                    }
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(AppAnimation.appearance, value: isShowingOverview)
         .initialSyncBanner()
     }
 
@@ -482,6 +495,20 @@ struct BudgetView: View {
     /// within the compiler's type-check budget.
     @ToolbarContentBuilder
     private var budgetToolbar: some ToolbarContent {
+        if budgetStore.currentBudgetMonth != nil {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    withAnimation(AppAnimation.appearance) {
+                        isShowingOverview = true
+                    }
+                } label: {
+                    Image(systemName: "chart.pie")
+                }
+                .accessibilityLabel(Text(String(localized: "Budget Overview", locale: locale)))
+                .accessibilityIdentifier("budget.overview")
+            }
+        }
+
         // Both arrows flank the month in the center, so nothing sits in the
         // leading "back button" position where the previous-month chevron
         // used to be mistaken for one (it steps the month, not the
