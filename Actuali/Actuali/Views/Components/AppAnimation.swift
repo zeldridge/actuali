@@ -19,6 +19,10 @@ enum AppAnimation {
     /// Something appearing or disappearing in place: a banner, a status
     /// icon, a toast.
     static let appearance = Animation.easeInOut(duration: 0.25)
+
+    /// A surface opening from a toolbar control, matching the quick motion
+    /// of the system menu beside it.
+    static let menu = Animation.snappy(duration: 0.22, extraBounce: 0)
 }
 
 extension View {

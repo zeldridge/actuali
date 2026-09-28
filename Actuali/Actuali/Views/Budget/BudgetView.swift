@@ -74,6 +74,26 @@ private struct BudgetListMetrics {
     }
 }
 
+private struct ScheduleNavigationDestination: ViewModifier {
+    @Binding var schedule: ScheduleSummary?
+    @ObservedObject var budgetStore: BudgetStore
+
+    func body(content: Content) -> some View {
+        content.navigationDestination(isPresented: Binding(
+            get: { schedule != nil },
+            set: {
+                if !$0 {
+                    schedule = nil
+                }
+            }
+        )) {
+            if let schedule {
+                ScheduleEditView(editing: schedule, budgetStore: budgetStore)
+            }
+        }
+    }
+}
+
 extension BudgetStore {
     /// Plain grouped cell text using the budget currency's native precision.
     /// The table headers supply the currency context, leaving more room for
@@ -119,6 +139,7 @@ struct BudgetView: View {
     @State private var templateResult: GoalTemplateResultAlert?
     @State private var isRunningBudgetAction = false
     @State private var isShowingOverview = false
+    @State private var editingSchedule: ScheduleSummary?
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.isWideLayout) private var isWideLayout
@@ -288,6 +309,10 @@ struct BudgetView: View {
             .navigationDestination(item: $transactionsDestination) { destination in
                 CategoryTransactionsView(destination: destination)
             }
+            .modifier(ScheduleNavigationDestination(
+                schedule: $editingSchedule,
+                budgetStore: budgetStore
+            ))
             .overlay {
                 if budgetStore.isLoading {
                     ProgressView()
@@ -302,17 +327,33 @@ struct BudgetView: View {
             }
         }
         .overlay {
-            if isShowingOverview {
-                BudgetOverviewOverlay {
-                    withAnimation(AppAnimation.appearance) {
+            overviewOverlay
+        }
+        .animation(AppAnimation.menu, value: isShowingOverview)
+        .initialSyncBanner()
+    }
+
+    @ViewBuilder
+    private var overviewOverlay: some View {
+        if isShowingOverview {
+            BudgetOverviewOverlay(
+                month: selectedMonth,
+                onOpenSchedule: { schedule in
+                    withAnimation(AppAnimation.menu) {
                         isShowingOverview = false
                     }
+                    editingSchedule = schedule
                 }
-                .transition(.move(edge: .top).combined(with: .opacity))
+            ) {
+                withAnimation(AppAnimation.menu) {
+                    isShowingOverview = false
+                }
             }
+            .transition(
+                .scale(scale: 0.94, anchor: .topLeading)
+                    .combined(with: .opacity)
+            )
         }
-        .animation(AppAnimation.appearance, value: isShowingOverview)
-        .initialSyncBanner()
     }
 
     /// Outcome of a goal-template run, presented as an alert.
@@ -498,7 +539,7 @@ struct BudgetView: View {
         if budgetStore.currentBudgetMonth != nil {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    withAnimation(AppAnimation.appearance) {
+                    withAnimation(AppAnimation.menu) {
                         isShowingOverview = true
                     }
                 } label: {

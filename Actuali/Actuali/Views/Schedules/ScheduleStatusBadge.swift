@@ -3,17 +3,22 @@ import SwiftUI
 /// Status pill for a schedule row, mirroring the web's `StatusBadge`.
 struct ScheduleStatusBadge: View {
     let status: ScheduleStatus
+    var label: String? = nil
+    var tint: Color? = nil
     @Environment(\.locale) private var locale
 
     var body: some View {
-        let statusLabel = ScheduleDescription.statusLabel(status, locale: locale)
+        let statusLabel = label ?? ScheduleDescription.statusLabel(status, locale: locale)
+        let badgeTint = tint ?? status.tint
 
         return Text(statusLabel)
             .font(.caption.weight(.medium))
-            .foregroundStyle(status.tint)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .foregroundStyle(badgeTint)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(status.tint.opacity(0.14), in: Capsule())
+            .background(badgeTint.opacity(0.14), in: Capsule())
             .accessibilityLabel(ReportStrings.format("Status: %@", statusLabel, locale: locale))
     }
 }

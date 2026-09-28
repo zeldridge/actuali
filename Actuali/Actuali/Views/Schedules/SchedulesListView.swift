@@ -27,15 +27,6 @@ struct SchedulesListView: View {
     @State private var pendingDelete: ScheduleSummary?
     @State private var actionError: String?
 
-    /// Row actions all write to the server; surface failures rather than
-    /// letting a tap look like it worked.
-    private func run(_ operation: @escaping () async throws -> Void) {
-        Task {
-            do { try await operation() }
-            catch { actionError = error.localizedDescription }
-        }
-    }
-
     var body: some View {
         Group {
             if visibleSchedules.isEmpty {
@@ -44,74 +35,14 @@ struct SchedulesListView: View {
                 List {
                     Section {
                         ForEach(visibleSchedules) { schedule in
-                            NavigationLink {
-                                ScheduleEditView(editing: schedule, budgetStore: budgetStore)
-                            } label: {
-                                ScheduleRow(
-                                    schedule: schedule,
-                                    status: budgetStore.scheduleStatuses[schedule.id] ?? .scheduled,
-                                    accountName: accountName(schedule),
-                                    payeeName: payeeName(schedule)
-                                )
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    pendingDelete = schedule
-                                } label: {
-                                    Label(ReportStrings.text("Delete", locale: locale), systemImage: "trash")
-                                }
-
-                                // Only a recurrence has a next occurrence to
-                                // skip to; skipScheduleNextDate throws on
-                                // anything else.
-                                if !schedule.completed, schedule.isRecurring {
-                                    Button {
-                                        run { try await budgetStore.skipScheduleNextDate(schedule) }
-                                    } label: {
-                                        Label(ReportStrings.text("Skip", locale: locale), systemImage: "forward.end")
-                                    }
-                                    .tint(.orange)
-                                }
-                            }
-                            .contextMenu {
-                                if !schedule.completed {
-                                    Button {
-                                        run { try await budgetStore.postScheduleTransaction(schedule, today: false) }
-                                    } label: {
-                                        Label(ReportStrings.text("Post Transaction", locale: locale), systemImage: "plus.circle")
-                                    }
-                                    Button {
-                                        run { try await budgetStore.postScheduleTransaction(schedule, today: true) }
-                                    } label: {
-                                        Label(ReportStrings.text("Post Transaction Today", locale: locale), systemImage: "calendar.badge.plus")
-                                    }
-                                    if schedule.isRecurring {
-                                        Button {
-                                            run { try await budgetStore.skipScheduleNextDate(schedule) }
-                                        } label: {
-                                            Label(ReportStrings.text("Skip Next Date", locale: locale), systemImage: "forward.end")
-                                        }
-                                    }
-                                }
-
-                                Divider()
-
-                                Button {
-                                    run { try await budgetStore.setScheduleCompleted(
-                                        schedule, completed: !schedule.completed
-                                    ) }
-                                } label: {
-                                    schedule.completed
-                                        ? Label(ReportStrings.text("Restart", locale: locale), systemImage: "arrow.clockwise")
-                                        : Label(ReportStrings.text("Mark Completed", locale: locale), systemImage: "checkmark.seal")
-                                }
-
-                                Button(role: .destructive) {
-                                    pendingDelete = schedule
-                                } label: {
-                                    Label(ReportStrings.text("Delete", locale: locale), systemImage: "trash")
-                                }
-                            }
+                            ScheduleListItem(
+                                schedule: schedule,
+                                status: budgetStore.scheduleStatuses[schedule.id] ?? .scheduled,
+                                accountName: accountName(schedule),
+                                payeeName: payeeName(schedule),
+                                onDelete: { pendingDelete = schedule },
+                                onActionError: { actionError = $0 }
+                            )
                         }
                     } footer: {
                         if completedCount > 0, !showCompleted {
@@ -182,7 +113,10 @@ struct SchedulesListView: View {
         ) {
             Button(ReportStrings.text("Delete Schedule", locale: locale), role: .destructive) {
                 guard let schedule = pendingDelete else { return }
-                run { try await budgetStore.deleteSchedule(schedule) }
+                Task {
+                    do { try await budgetStore.deleteSchedule(schedule) }
+                    catch { actionError = error.localizedDescription }
+                }
             }
         } message: {
             Text(ReportStrings.text("Transactions this schedule already created are kept.", locale: locale))
@@ -256,6 +190,115 @@ struct SchedulesListView: View {
     }
 }
 
+/// The complete interactive schedule row shared by Settings and the Budget
+/// overview, so navigation and row actions cannot drift between the two.
+struct ScheduleListItem: View {
+    @EnvironmentObject private var budgetStore: BudgetStore
+    @Environment(\.locale) private var locale
+
+    let schedule: ScheduleSummary
+    let status: ScheduleStatus
+    let accountName: String?
+    let payeeName: String?
+    var statusLabel: String? = nil
+    var statusTint: Color? = nil
+    var onSelect: (() -> Void)? = nil
+    let onDelete: () -> Void
+    let onActionError: (String) -> Void
+
+    var body: some View {
+        rowNavigation
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive, action: onDelete) {
+                Label(ReportStrings.text("Delete", locale: locale), systemImage: "trash")
+            }
+
+            if !schedule.completed, schedule.isRecurring {
+                Button {
+                    run { try await budgetStore.skipScheduleNextDate(schedule) }
+                } label: {
+                    Label(ReportStrings.text("Skip", locale: locale), systemImage: "forward.end")
+                }
+                .tint(.orange)
+            }
+        }
+        .contextMenu {
+            if !schedule.completed {
+                Button {
+                    run { try await budgetStore.postScheduleTransaction(schedule, today: false) }
+                } label: {
+                    Label(ReportStrings.text("Post Transaction", locale: locale), systemImage: "plus.circle")
+                }
+                Button {
+                    run { try await budgetStore.postScheduleTransaction(schedule, today: true) }
+                } label: {
+                    Label(ReportStrings.text("Post Transaction Today", locale: locale), systemImage: "calendar.badge.plus")
+                }
+                if schedule.isRecurring {
+                    Button {
+                        run { try await budgetStore.skipScheduleNextDate(schedule) }
+                    } label: {
+                        Label(ReportStrings.text("Skip Next Date", locale: locale), systemImage: "forward.end")
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                run {
+                    try await budgetStore.setScheduleCompleted(
+                        schedule, completed: !schedule.completed
+                    )
+                }
+            } label: {
+                schedule.completed
+                    ? Label(ReportStrings.text("Restart", locale: locale), systemImage: "arrow.clockwise")
+                    : Label(ReportStrings.text("Mark Completed", locale: locale), systemImage: "checkmark.seal")
+            }
+
+            Button(role: .destructive, action: onDelete) {
+                Label(ReportStrings.text("Delete", locale: locale), systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rowNavigation: some View {
+        if let onSelect {
+            Button(action: onSelect) {
+                row
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink {
+                ScheduleEditView(editing: schedule, budgetStore: budgetStore)
+            } label: {
+                row
+            }
+        }
+    }
+
+    private var row: some View {
+        ScheduleRow(
+            schedule: schedule,
+            status: status,
+            accountName: accountName,
+            payeeName: payeeName,
+            statusLabel: statusLabel,
+            statusTint: statusTint
+        )
+        .foregroundStyle(.primary)
+    }
+
+    private func run(_ operation: @escaping () async throws -> Void) {
+        Task {
+            do { try await operation() }
+            catch { onActionError(error.localizedDescription) }
+        }
+    }
+}
+
 /// One schedule in the list.
 struct ScheduleRow: View {
     @EnvironmentObject private var budgetStore: BudgetStore
@@ -265,6 +308,8 @@ struct ScheduleRow: View {
     let status: ScheduleStatus
     let accountName: String?
     let payeeName: String?
+    var statusLabel: String? = nil
+    var statusTint: Color? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -272,11 +317,13 @@ struct ScheduleRow: View {
                 Text(title)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
-                ScheduleStatusBadge(status: status)
+                ScheduleStatusBadge(status: status, label: statusLabel, tint: statusTint)
                 Spacer()
                 Text(amountText)
                     .font(.body)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                     .foregroundStyle(schedule.postAmount > 0 ? Color.green : Color.primary)
             }
             HStack {
