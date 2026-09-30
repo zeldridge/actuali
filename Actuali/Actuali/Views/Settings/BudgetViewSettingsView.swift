@@ -20,7 +20,11 @@ struct BudgetViewSettingsView: View {
 
                 Toggle(String(localized: "Group Totals"), isOn: $budgetStore.showGroupTotals)
                     .disabled(budgetStore.budgetDisplayStyle == .clean)
+                Toggle(String(localized: "Show Spent"), isOn: $budgetStore.showCompactSpentColumn)
+                    .disabled(budgetStore.budgetDisplayStyle == .clean)
+                    .accessibilityIdentifier("budgetViewSettings.showSpent")
 
+                Toggle(String(localized: "Budgeted Amounts"), isOn: $budgetStore.showBudgetedAmounts)
                 Toggle(String(localized: "Status Filters"), isOn: $budgetStore.showBudgetCheckInStrip)
                 Toggle(String(localized: "Hide Spent Categories"), isOn: $budgetStore.hideZeroBudgetCategories)
                 Toggle(String(localized: "Category Status Dots"), isOn: $budgetStore.showCategoryStatusDots)
@@ -74,7 +78,7 @@ struct BudgetViewSettingsView: View {
                 Text(String(localized: "Presentation"))
             } footer: {
                 if budgetStore.budgetDisplayStyle == .clean {
-                    Text(String(localized: "Group Totals are available in Compact view."))
+                    Text(String(localized: "Group Totals and Show Spent are available in Compact view."))
                 }
             }
 
