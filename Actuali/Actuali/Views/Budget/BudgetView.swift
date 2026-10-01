@@ -32,6 +32,10 @@ enum BudgetCategoryAccessibility {
         ReportStrings.text(isHidden ? "Show" : "Hide", locale: locale, bundle: bundle)
     }
 
+    static func progressBarVisibility(isHidden: Bool, locale: Locale, bundle: Bundle = .main) -> String {
+        ReportStrings.text(isHidden ? "Show progress bar" : "Hide progress bar", locale: locale, bundle: bundle)
+    }
+
     static func contextMoveAction(isOverspent: Bool, locale: Locale, bundle: Bundle = .main) -> String {
         ReportStrings.text(isOverspent ? "Cover Overspending" : "Move Money", locale: locale, bundle: bundle)
     }
@@ -427,7 +431,8 @@ struct BudgetView: View {
                             },
                             showsSpent: budgetStore.showCompactSpentColumn,
                             showsBudgeted: budgetStore.showBudgetedAmounts,
-                            showsProgressBars: budgetStore.showBudgetProgressBars,
+                            showsProgressBars: budgetStore.showBudgetProgressBars
+                                && !budgetStore.hiddenBudgetProgressCategoryIDs.contains(category.categoryId),
                             showsStatusDots: budgetStore.showCategoryStatusDots,
                             onShowDetails: { selectedCategory = $0 },
                             onEditBudget: { editingCategory = $0 },
@@ -1295,11 +1300,10 @@ struct CleanCategoryBudgetRow: View {
                 ))
                 .rolloverIndicator(category.carryoverEnabled, color: balanceTint)
             }
-            if budgetStore.showBudgetProgressBars, category.showsProgressBar {
-                CategoryProgressBar(
-                    fraction: category.progressFraction,
-                    state: category.progressState
-                )
+            if budgetStore.showBudgetProgressBars,
+               category.showsProgressBar,
+               !budgetStore.hiddenBudgetProgressCategoryIDs.contains(category.categoryId) {
+                CategoryProgressBar(category: category)
             }
             HStack {
                 if budgetStore.showBudgetedAmounts {
@@ -1366,6 +1370,7 @@ struct CleanCategoryBudgetRow: View {
 /// actions as the row's tappable cells plus hide/show. Nothing here is a swipe
 /// action: a row swipe would swallow the table's month navigation (GH #425).
 struct CategoryRowContextMenu: ViewModifier {
+    @EnvironmentObject private var budgetStore: BudgetStore
     @Environment(\.locale) private var locale
     let category: CategoryBudget
     let isHidden: Bool
@@ -1407,6 +1412,17 @@ struct CategoryRowContextMenu: ViewModifier {
                 Button { onSetHidden(!isHidden) } label: {
                     Label(BudgetCategoryAccessibility.contextVisibility(isHidden: isHidden, locale: locale),
                           systemImage: isHidden ? "eye" : "eye.slash")
+                }
+            }
+            if budgetStore.showBudgetProgressBars, category.showsProgressBar {
+                let isProgressBarHidden = budgetStore.hiddenBudgetProgressCategoryIDs.contains(category.categoryId)
+                Button {
+                    budgetStore.setBudgetProgressBarHidden(!isProgressBarHidden, for: category.categoryId)
+                } label: {
+                    Label(
+                        BudgetCategoryAccessibility.progressBarVisibility(isHidden: isProgressBarHidden, locale: locale),
+                        systemImage: isProgressBarHidden ? "plus.rectangle" : "minus.rectangle"
+                    )
                 }
             }
         }
@@ -1456,8 +1472,11 @@ extension View {
 /// a month is finished, projected savings while it's still current or ahead.
 /// Mirrors the Actual webapp, which flips "Projected savings" to "Saved" when
 /// the month rolls over.
-@MainActor private func trackingSavings(_ budget: BudgetMonth) -> Int {
-    isPastMonth(budget.month) ? budget.savedActual : budget.projectedSavings
+@MainActor private func trackingSavings(
+    _ budget: BudgetMonth,
+    excluding excluded: Set<String>
+) -> Int {
+    isPastMonth(budget.month) ? budget.savedActual(excluding: excluded) : budget.projectedSavings
 }
 
 @MainActor private func trackingSavingsLabel(_ budget: BudgetMonth) -> String {
@@ -1493,7 +1512,7 @@ struct CleanBudgetSummary: View {
             HStack(alignment: .top) {
                 SummaryStat(
                     label: "Spent",
-                    value: budgetStore.displayBalance(-budget.totalSpent)
+                    value: budgetStore.displayBalance(-budget.totalSpent(excluding: budgetStore.excludedFromSpentCategoryIds))
                 )
                 Spacer()
                 // Envelope budgets lead with unallocated funds; tracking
@@ -1508,7 +1527,10 @@ struct CleanBudgetSummary: View {
                         alignment: .trailing
                     )
                 } else {
-                    let value = trackingSavings(budget)
+                    let value = trackingSavings(
+                        budget,
+                        excluding: budgetStore.excludedFromSpentCategoryIds
+                    )
                     SummaryStat(
                         label: trackingSavingsLabel(budget),
                         value: budgetStore.displayBalance(value),
@@ -1873,6 +1895,16 @@ struct CategoryBudgetDetailSheet: View {
                     }
                 )
 
+                Section {
+                    Toggle("Include in Spent", isOn: Binding(
+                        get: { budgetStore.isCategoryIncludedInSpent(category.categoryId) },
+                        set: { budgetStore.setCategoryIncludedInSpent($0, categoryId: category.categoryId) }
+                    ))
+                    .accessibilityIdentifier("categoryEditor.includeInSpent")
+                } footer: {
+                    Text("Excluded categories stay in the budget and transaction totals, but are left out of Spent, Saved, and Net on the Budget and Accounts tabs.")
+                }
+
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -2104,19 +2136,26 @@ extension CategoryProgressState {
 }
 
 /// Spent-vs-available bar for a budget row. Fill and color mirror the row's
-/// Available amount: green while money remains, red once overspent.
+/// Available amount: green while money remains, red once overspent. Inverse
+/// mode draws the remaining share instead, so it starts full and drains.
 struct CategoryProgressBar: View {
     @EnvironmentObject private var budgetStore: BudgetStore
     @Environment(\.locale) private var locale
-    let fraction: Double
-    let state: CategoryProgressState
+    let category: CategoryBudget
 
-    private var statusColor: Color {
-        budgetStore.categoryStatusDotColor(for: state)
+    private var fraction: Double {
+        category.progressFraction(inverted: budgetStore.showInverseBudgetProgressBars)
     }
 
+    private var statusColor: Color {
+        budgetStore.categoryStatusDotColor(for: category.progressState)
+    }
+
+    /// Inverse mode empties the fill as money runs out, so the status color
+    /// has to live in the track or an overspent row reads as a spent one.
     private var trackTint: Color {
-        state == .funded ? statusColor.opacity(0.25) : Color(.systemFill)
+        budgetStore.showInverseBudgetProgressBars || category.progressState == .funded
+            ? statusColor.opacity(0.25) : Color(.systemFill)
     }
 
     var body: some View {
@@ -2130,14 +2169,15 @@ struct CategoryProgressBar: View {
             }
         }
         .frame(height: 5)
-        // Budgeting a category shrinks its bar as the money lands, so the
-        // edit is visible in the row itself and not only in the pill.
+        // Budgeting a category moves its bar as the money lands (shrinks it,
+        // or fills it in inverse mode), so the edit is visible in the row
+        // itself and not only in the pill.
         .animation(AppAnimation.amount, value: fraction)
         .accessibilityElement()
         .accessibilityLabel(ReportStrings.format(
             "%@, spent %lld percent of available",
-            state.statusText(locale: locale, bundle: .main),
-            Int64((fraction * 100).rounded()),
+            category.progressState.statusText(locale: locale, bundle: .main),
+            Int64((category.progressFraction * 100).rounded()),
             locale: locale,
             bundle: .main
         ))

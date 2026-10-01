@@ -266,6 +266,7 @@ final class BudgetStore: ObservableObject {
                 loanConfigs = [:]
                 depositConfigs = [:]
                 cardAccountMappings = [:]
+                excludedFromSpentCategoryIds = Self.loadExcludedFromSpentCategoryIds(for: currentBudgetId)
             }
         }
     }
@@ -293,6 +294,19 @@ final class BudgetStore: ObservableObject {
     /// Statement dues (statement balance, payments since closing, remaining due) for active credit card accounts.
     @Published var creditCardStatementDues: [String: [CreditCardCycle.StatementDue]] = [:]
     @Published var currentBudgetMonth: BudgetMonth?
+
+    /// Categories left out of the Spent (and so Saved/Net) summaries on the
+    /// Budget and Accounts tabs. This
+    /// is intentionally local to the device and budget: it is a presentation
+    /// preference, not a change to Actual's synced budget data.
+    @Published var excludedFromSpentCategoryIds: Set<String> = [] {
+        didSet {
+            guard let budgetId = currentBudgetId else { return }
+            let key = Self.excludedFromSpentDefaultsKey(for: budgetId)
+            UserDefaults.standard.set(Array(excludedFromSpentCategoryIds), forKey: key)
+        }
+    }
+
     /// Accounts wired up to a bank feed, refreshed alongside the rest of the
     /// budget so the accounts tab knows which rows can be synced.
     @Published private(set) var bankSyncAccounts: [BankSyncAccount] = []
@@ -511,6 +525,41 @@ final class BudgetStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(showBudgetProgressBars, forKey: "showBudgetProgressBars")
         }
+    }
+
+    /// Whether Budget progress bars are inverted so they start full and
+    /// decrease as category spending is used up. Persisted to UserDefaults,
+    /// defaults to off to preserve the existing progress-bar behavior.
+    @Published var showInverseBudgetProgressBars: Bool = false {
+        didSet {
+            UserDefaults.standard.set(
+                showInverseBudgetProgressBars,
+                forKey: "showInverseBudgetProgressBars"
+            )
+        }
+    }
+
+    /// Whether individual Budget categories have their progress bar hidden.
+    /// Device-local presentation preference; category IDs are stable within Actual.
+    @Published private(set) var hiddenBudgetProgressCategoryIDs: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(
+                hiddenBudgetProgressCategoryIDs.sorted(),
+                forKey: "hiddenBudgetProgressCategoryIDs"
+            )
+        }
+    }
+
+    func setBudgetProgressBarHidden(_ hidden: Bool, for categoryId: String) {
+        if hidden {
+            hiddenBudgetProgressCategoryIDs.insert(categoryId)
+        } else {
+            hiddenBudgetProgressCategoryIDs.remove(categoryId)
+        }
+    }
+
+    private static func loadHiddenBudgetProgressCategoryIDs(from defaults: UserDefaults) -> Set<String> {
+        Set(defaults.stringArray(forKey: "hiddenBudgetProgressCategoryIDs") ?? [])
     }
 
     /// Whether Budget rows show their compact category-status dot.
@@ -757,6 +806,29 @@ final class BudgetStore: ObservableObject {
         return showHiddenCategories
             ? filtered + categories.filter(\.isEffectivelyHidden)
             : filtered
+    }
+
+    func isCategoryIncludedInSpent(_ categoryId: String) -> Bool {
+        !excludedFromSpentCategoryIds.contains(categoryId)
+    }
+
+    func setCategoryIncludedInSpent(_ included: Bool, categoryId: String) {
+        if included {
+            excludedFromSpentCategoryIds.remove(categoryId)
+        } else {
+            excludedFromSpentCategoryIds.insert(categoryId)
+        }
+    }
+
+    private static func excludedFromSpentDefaultsKey(for budgetId: String) -> String {
+        "excludedFromSpentCategoryIds.\(budgetId)"
+    }
+
+    private static func loadExcludedFromSpentCategoryIds(for budgetId: String?) -> Set<String> {
+        guard let budgetId,
+              let values = UserDefaults.standard.array(forKey: excludedFromSpentDefaultsKey(for: budgetId)) as? [String]
+        else { return [] }
+        return Set(values)
     }
 
     /// Closed accounts the Accounts list should show — none when the hide
@@ -1661,6 +1733,9 @@ final class BudgetStore: ObservableObject {
         _currentBudgetId = Published(
             initialValue: defaults.string(forKey: "currentBudgetId")
         )
+        _excludedFromSpentCategoryIds = Published(
+            initialValue: Self.loadExcludedFromSpentCategoryIds(for: defaults.string(forKey: "currentBudgetId"))
+        )
         _currencyCode = Published(
             initialValue: defaults.string(forKey: "currencyCode") ?? "USD"
         )
@@ -1691,6 +1766,12 @@ final class BudgetStore: ObservableObject {
         _uncategorizedTapAction = Published(initialValue: UncategorizedTapAction.persisted)
         _showBudgetProgressBars = Published(
             initialValue: persistedBool("showBudgetProgressBars", default: true)
+        )
+        _showInverseBudgetProgressBars = Published(
+            initialValue: persistedBool("showInverseBudgetProgressBars", default: false)
+        )
+        _hiddenBudgetProgressCategoryIDs = Published(
+            initialValue: Self.loadHiddenBudgetProgressCategoryIDs(from: defaults)
         )
         _showCategoryStatusDots = Published(
             initialValue: persistedBool("showCategoryStatusDots", default: true)
@@ -1790,6 +1871,9 @@ final class BudgetStore: ObservableObject {
         case .loadPersistedPreferences:
             _categoryStatusDotColors = Published(
                 initialValue: Self.loadCategoryStatusDotColors(from: UserDefaults.standard)
+            )
+            _hiddenBudgetProgressCategoryIDs = Published(
+                initialValue: Self.loadHiddenBudgetProgressCategoryIDs(from: UserDefaults.standard)
             )
         }
     }
@@ -2445,6 +2529,13 @@ final class BudgetStore: ObservableObject {
     }
 
     func loadLocalBudget(_ budgetId: String) async {
+        if budgetId != DemoDataSeeder.budgetId {
+            do {
+                try DemoDataSeeder.removeSamplePendingImport()
+            } catch {
+                logger.error("Demo pending import cleanup failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         isLoading = true
         isBudgetLoaded = false
         error = nil
@@ -2746,7 +2837,15 @@ final class BudgetStore: ObservableObject {
             // deterministic: they share the simulator's defaults across
             // launches, and earlier tests record demo-budget history).
             HistoryStore.shared.clearPersistedActions(budgetID: DemoDataSeeder.budgetId)
+            UserDefaults.standard.removeObject(
+                forKey: Self.excludedFromSpentDefaultsKey(for: DemoDataSeeder.budgetId)
+            )
             await loadLocalBudget(DemoDataSeeder.budgetId)
+            do {
+                try DemoDataSeeder.seedPendingImports()
+            } catch {
+                logger.error("Demo pending import seed failed: \(error.localizedDescription, privacy: .public)")
+            }
             // The seeder recreates the budget directory mid-launch, so any
             // loadLocalBudget already running from init() may have captured an
             // I/O error. A successful demo seed supersedes it.
@@ -3343,7 +3442,10 @@ final class BudgetStore: ObservableObject {
     /// flashing zeroes.
     func fetchAccountsMonthSummary(month: String) async -> BudgetDatabase.AccountsMonthSummary? {
         do {
-            return try await database?.fetchAccountsMonthSummary(month: month)
+            return try await database?.fetchAccountsMonthSummary(
+                month: month,
+                excludingCategoryIds: excludedFromSpentCategoryIds
+            )
         } catch is CancellationError {
             // The caller's task was cancelled (tab switch, a superseded
             // refresh). Nothing failed — never alarm the user.

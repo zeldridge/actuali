@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CompactBudgetSummary: View {
+    @EnvironmentObject private var budgetStore: BudgetStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.locale) private var locale
 
@@ -13,6 +14,7 @@ struct CompactBudgetSummary: View {
             budget: budget,
             showsSpent: showsSpent,
             showsBudgeted: showsBudgeted,
+            excludedFromSpentCategoryIds: budgetStore.excludedFromSpentCategoryIds,
             currentMonth: BudgetView.currentMonthString()
         )
     }
@@ -361,10 +363,7 @@ struct CompactCategoryBudgetRow: View {
                 compactContent
             }
             if showsProgressBars, category.showsProgressBar {
-                CategoryProgressBar(
-                    fraction: category.progressFraction,
-                    state: category.progressState
-                )
+                CategoryProgressBar(category: category)
             }
         }
         .padding(.vertical, CompactBudgetTableLayout.categoryRowVerticalPadding)
